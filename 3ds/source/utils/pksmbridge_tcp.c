@@ -26,6 +26,9 @@
 
 #include "pksmbridge_tcp.h"
 #include "pksmbridge_api.h"
+#include <errno.h>
+#include <fcntl.h>
+#include <poll.h>
 #include <stdbool.h>
 #include <stdlib.h>
 #include <string.h>
@@ -95,83 +98,23 @@ static bool verifyPKSMBridgeHeader(char protocol_name[10])
     return (result == 0) ? true : false;
 }
 
-/** A helper function to send a file over the PKSM Bridge piece-by-piece to avoid additional memory
- * allocations. */
-static bool sendPKSMBridgeFileToSocket(int sockfd, struct pksmBridgeFile file)
+/** Checks if the specified action is ready to be taken by the input connection file
+ * descriptor in the provided timeout.
+ */
+static enum pksmBridgeError actionReady(int fdconn, int timeout, bool* readyOut, short action)
 {
-    uint32_t sentBytes =
-        sendDataFromBufferToSocket(sockfd, &file.checksumSize, sizeof(file.checksumSize));
-    if (sentBytes != sizeof(file.checksumSize))
-    {
-        return false;
-    }
-    sentBytes = sendDataFromBufferToSocket(sockfd, file.checksum, file.checksumSize);
-    if (sentBytes != file.checksumSize)
-    {
-        return false;
-    }
-    sentBytes = sendDataFromBufferToSocket(sockfd, &file.size, sizeof(file.size));
-    if (sentBytes != sizeof(file.size))
-    {
-        return false;
-    }
-    sentBytes = sendDataFromBufferToSocket(sockfd, file.contents, file.size);
-    if (sentBytes != file.size)
-    {
-        return false;
-    }
-    return true;
-}
-
-/** A helper function to receive file bytes over the PKSM Bridge. Callers are expected to `free()`
- * the `outFile`. */
-static uint32_t receiveFileOverPKSMBridgeFromSocket(
-    int sockfd, uint8_t** outFile, bool (*validateChecksumFunc)(struct pksmBridgeFile file))
-{
-    uint32_t checksumSize;
-    uint32_t bytesRead =
-        receiveDataFromSocketIntoBuffer(sockfd, &checksumSize, sizeof(checksumSize));
-    if (bytesRead != sizeof(checksumSize))
-    {
-        return 0;
-    }
-    uint8_t* checksumBuffer = (uint8_t*)malloc(checksumSize);
-    bytesRead               = receiveDataFromSocketIntoBuffer(sockfd, checksumBuffer, checksumSize);
-    if (bytesRead != checksumSize)
-    {
-        free(checksumBuffer);
-        return 0;
-    }
-    uint32_t fileSize;
-    bytesRead = receiveDataFromSocketIntoBuffer(sockfd, &fileSize, sizeof(fileSize));
-    if (bytesRead != sizeof(fileSize))
-    {
-        free(checksumBuffer);
-        return 0;
-    }
-    uint8_t* fileBuffer = (uint8_t*)malloc(fileSize);
-    bytesRead           = receiveDataFromSocketIntoBuffer(sockfd, fileBuffer, fileSize);
-    if (bytesRead != fileSize)
-    {
-        free(fileBuffer);
-        free(checksumBuffer);
-        return 0;
+    struct pollfd fdEvents {
+        .fd = fdconn,
+        .events = action,
+        .revents = 0
+    };
+    if (poll(&fdEvents, 1 /* number of fds to track */, timeout) < 0) {
+        close(fdconn);
+        return PKSM_BRIDGE_ERROR_CONNECTION_ERROR;
     }
 
-    // Construct a temporary `struct pksmBridgeFile` pointing to the corresponding buffers to pass
-    // to the validation function.
-    struct pksmBridgeFile file = {.checksumSize = checksumSize,
-        .checksum                               = checksumBuffer,
-        .size                                   = fileSize,
-        .contents                               = fileBuffer};
-    if (!validateChecksumFunc(file))
-    {
-        return 0;
-    }
-    free(checksumBuffer);
-
-    *outFile = fileBuffer;
-    return fileSize;
+    *readyOut = fdEvents.revents & action;
+    return PKSM_BRIDGE_ERROR_NONE;
 }
 
 bool checkSupportedPKSMBridgeProtocolVersionForTCP(int version)
@@ -181,8 +124,8 @@ bool checkSupportedPKSMBridgeProtocolVersionForTCP(int version)
     return (version == 1);
 }
 
-enum pksmBridgeError sendFileOverPKSMBridgeViaTCP(
-    uint16_t port, struct in_addr address, struct pksmBridgeFile file)
+enum pksmBridgeError initializeSendConnection(uint16_t port,
+    struct in_addr address, int* fdOut)
 {
     int fd = createSocket();
     if (fd < 0)
@@ -226,19 +169,66 @@ enum pksmBridgeError sendFileOverPKSMBridgeViaTCP(
         return PKSM_BRIDGE_ERROR_UNSUPPORTED_PROTCOL_VERSION;
     }
 
-    // Send the pksmBridgeFile, since the protocol version was confirmed.
-    bool success = sendPKSMBridgeFileToSocket(fd, file);
-    close(fd);
-    return success ? PKSM_BRIDGE_ERROR_NONE : PKSM_BRIDGE_DATA_WRITE_FAILURE;
+    *fdOut = fd;
+    return PKSM_BRIDGE_ERROR_NONE;
 }
 
-enum pksmBridgeError receiveFileOverPKSMBridgeViaTCP(uint16_t port, struct in_addr* outAddress,
-    uint8_t** outFile, uint32_t* outFileSize,
-    bool (*validateChecksumFunc)(struct pksmBridgeFile file))
+enum pksmBridgeError writeReady(int fdconn, int timeout, bool* readyOut)
+{
+    return actionReady(fdconn, timeout, readyOut, POLLOUT);
+}
+
+enum pksmBridgeError sendPKSMBridgeFileMetadataToSocket(int fdconn, struct pksmBridgeFile file)
+{
+    uint32_t sentBytes =
+        sendDataFromBufferToSocket(fdconn, &file.checksumSize, sizeof(file.checksumSize));
+    if (sentBytes != sizeof(file.checksumSize))
+    {
+        close(fdconn);
+        return PKSM_BRIDGE_DATA_WRITE_FAILURE;
+    }
+    sentBytes = sendDataFromBufferToSocket(fdconn, file.checksum, file.checksumSize);
+    if (sentBytes != file.checksumSize)
+    {
+        close(fdconn);
+        return PKSM_BRIDGE_DATA_WRITE_FAILURE;
+    }
+    sentBytes = sendDataFromBufferToSocket(fdconn, &file.size, sizeof(file.size));
+    if (sentBytes != sizeof(file.size))
+    {
+        close(fdconn);
+        return PKSM_BRIDGE_DATA_WRITE_FAILURE;
+    }
+    return PKSM_BRIDGE_ERROR_NONE;
+}
+
+enum pksmBridgeError sendFileSegment(int fdconn, uint8_t* buffer, size_t position, size_t size)
+{
+    if (sendDataFromBufferToSocket(fdconn, buffer + position, size) != size) {
+        close(fdconn);
+        return PKSM_BRIDGE_DATA_WRITE_FAILURE;
+    }
+    return PKSM_BRIDGE_ERROR_NONE;
+}
+
+enum pksmBridgeError fileSendFinalization(int fdconn)
+{
+    close(fdconn);
+    return PKSM_BRIDGE_ERROR_NONE;
+}
+
+enum pksmBridgeError startListeningForFileReceive(uint16_t port, int* fdOut,
+    struct sockaddr_in* servaddrOut)
 {
     int fd = createSocket();
     if (fd < 0)
     {
+        return PKSM_BRIDGE_ERROR_CONNECTION_ERROR;
+    }
+    // makes sure the socket is non-blocking
+    if (fcntl(fd, F_SETFL, fcntl(fd, F_GETFL, 0) | O_NONBLOCK) < 0)
+    {
+        close(fd);
         return PKSM_BRIDGE_ERROR_CONNECTION_ERROR;
     }
 
@@ -254,14 +244,33 @@ enum pksmBridgeError receiveFileOverPKSMBridgeViaTCP(uint16_t port, struct in_ad
         return PKSM_BRIDGE_ERROR_CONNECTION_ERROR;
     }
 
-    int fdconn;
-    int addrlen = sizeof(servaddr);
-    if ((fdconn = accept(fd, (struct sockaddr*)&servaddr, (socklen_t*)&addrlen)) < 0)
+    *fdOut = fd;
+    *servaddrOut = servaddr;
+    return PKSM_BRIDGE_ERROR_NONE;
+}
+
+enum pksmBridgeError checkForFileReceiveConnection(int fd, struct sockaddr_in* servaddr, int* fdconnOut)
+{
+    int addrlen = sizeof(*servaddr);
+    int fdconn = accept(fd, (struct sockaddr*)servaddr, (socklen_t*)&addrlen);
+
+    if (errno == EAGAIN || errno == EWOULDBLOCK)
+    {
+        *fdconnOut = fdconn;
+        return PKSM_BRIDGE_ERROR_NONE;
+    }
+    if (fdconn < 0)
     {
         close(fd);
         return PKSM_BRIDGE_ERROR_CONNECTION_ERROR;
     }
+
     close(fd);
+    // makes sure the socket is blocking. we actually want to have it be blocking for simplicity
+    if (fcntl(fdconn, F_SETFL, fcntl(fd, F_GETFL, 0) & ~O_NONBLOCK) < 0) {
+        close(fdconn);
+        return PKSM_BRIDGE_ERROR_CONNECTION_ERROR;
+    }
 
     // Send a pksmBridgeRequest, requesting a specific protocol version.
     struct pksmBridgeRequest request = createPKSMBridgeRequest(PKSM_BRIDGE_LATEST_PROTOCOL_VERSION);
@@ -291,22 +300,67 @@ enum pksmBridgeError receiveFileOverPKSMBridgeViaTCP(uint16_t port, struct in_ad
         return PKSM_BRIDGE_ERROR_UNSUPPORTED_PROTCOL_VERSION;
     }
 
-    // Expect a pksmBridgeFile since the protocol version was confirmed.
-    uint8_t* fileBuffer = NULL;
-    uint32_t fileSize =
-        receiveFileOverPKSMBridgeFromSocket(fdconn, &fileBuffer, validateChecksumFunc);
-    close(fdconn);
-
-    if (fileSize == 0 || fileBuffer == NULL)
-    {
-        return PKSM_BRIDGE_DATA_FILE_CORRUPTED;
-    }
-
-    if (outAddress != NULL)
-    {
-        *outAddress = servaddr.sin_addr;
-    }
-    *outFileSize = fileSize;
-    *outFile     = fileBuffer;
+    *fdconnOut = fdconn;
     return PKSM_BRIDGE_ERROR_NONE;
+}
+
+enum pksmBridgeError readReady(int fdconn, int timeout, bool* readyOut)
+{
+    return actionReady(fdconn, timeout, readyOut, POLLIN);
+}
+
+enum pksmBridgeError receiveFileMetadata(int fdconn, uint32_t* checksumSizeOut, uint8_t** checksumOut, uint32_t* fileSizeOut)
+{
+    uint32_t checksumSize;
+    uint32_t bytesRead =
+        receiveDataFromSocketIntoBuffer(fdconn, &checksumSize, sizeof(checksumSize));
+    if (bytesRead != sizeof(checksumSize))
+    {
+        close(fdconn);
+        return PKSM_BRIDGE_DATA_READ_FAILURE;
+    }
+    uint8_t* checksumBuffer = (uint8_t*)malloc(checksumSize);
+    bytesRead               = receiveDataFromSocketIntoBuffer(fdconn, checksumBuffer, checksumSize);
+    if (bytesRead != checksumSize)
+    {
+        close(fdconn);
+        free(checksumBuffer);
+        return PKSM_BRIDGE_DATA_READ_FAILURE;
+    }
+    uint32_t fileSize;
+    bytesRead = receiveDataFromSocketIntoBuffer(fdconn, &fileSize, sizeof(fileSize));
+    if (bytesRead != sizeof(fileSize))
+    {
+        close(fdconn);
+        free(checksumBuffer);
+        return PKSM_BRIDGE_DATA_READ_FAILURE;
+    }
+
+    *checksumSizeOut = checksumSize;
+    *checksumOut = checksumBuffer;
+    *fileSizeOut = fileSize;
+    return PKSM_BRIDGE_ERROR_NONE;
+}
+
+enum pksmBridgeError receiveFileSegment(int fdconn, uint8_t* buffer, size_t position, size_t size)
+{
+    if (receiveDataFromSocketIntoBuffer(fdconn, buffer + position, size) != size) {
+        close(fdconn);
+        return PKSM_BRIDGE_DATA_READ_FAILURE;
+    }
+    return PKSM_BRIDGE_ERROR_NONE;
+}
+
+enum pksmBridgeError fileReceiptFinalization(int fdconn, struct sockaddr_in servaddr,
+    struct in_addr* outAddress, struct pksmBridgeFile fileStruct, bool (*validateChecksumFunc)(struct pksmBridgeFile))
+{
+    close(fdconn);
+    *outAddress = servaddr.sin_addr;
+    struct pksmBridgeFile file = {
+        .checksumSize = checksumSize,
+        .checksum = checksum,
+        .size = saveSize,
+        .contents = save
+    };
+    return validateChecksumFunc(file) ? PKSM_BRIDGE_ERROR_NONE : PKSM_BRIDGE_DATA_FILE_CORRUPTED;
 }
