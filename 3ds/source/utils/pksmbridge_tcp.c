@@ -103,7 +103,7 @@ static bool verifyPKSMBridgeHeader(char protocol_name[10])
  */
 static enum pksmBridgeError actionReady(int fdconn, int timeout, bool* readyOut, short action)
 {
-    struct pollfd fdEvents {
+    struct pollfd fdEvents = {
         .fd = fdconn,
         .events = action,
         .revents = 0
@@ -211,10 +211,9 @@ enum pksmBridgeError sendFileSegment(int fdconn, uint8_t* buffer, size_t positio
     return PKSM_BRIDGE_ERROR_NONE;
 }
 
-enum pksmBridgeError fileSendFinalization(int fdconn)
+enum pksmBridgeError sendClosure(int fdconn)
 {
-    close(fdconn);
-    return PKSM_BRIDGE_ERROR_NONE;
+    return close(fdconn) < 0 ? PKSM_BRIDGE_ERROR_CONNECTION_ERROR : PKSM_BRIDGE_ERROR_NONE;
 }
 
 enum pksmBridgeError startListeningForFileReceive(uint16_t port, int* fdOut,
@@ -351,16 +350,9 @@ enum pksmBridgeError receiveFileSegment(int fdconn, uint8_t* buffer, size_t posi
     return PKSM_BRIDGE_ERROR_NONE;
 }
 
-enum pksmBridgeError fileReceiptFinalization(int fdconn, struct sockaddr_in servaddr,
-    struct in_addr* outAddress, struct pksmBridgeFile fileStruct, bool (*validateChecksumFunc)(struct pksmBridgeFile))
+enum pksmBridgeError receiveClosure(int fdconn, struct sockaddr_in servaddr,
+    struct in_addr* outAddress)
 {
-    close(fdconn);
     *outAddress = servaddr.sin_addr;
-    struct pksmBridgeFile file = {
-        .checksumSize = checksumSize,
-        .checksum = checksum,
-        .size = saveSize,
-        .contents = save
-    };
-    return validateChecksumFunc(file) ? PKSM_BRIDGE_ERROR_NONE : PKSM_BRIDGE_DATA_FILE_CORRUPTED;
+    return close(fdconn) < 0 ? PKSM_BRIDGE_ERROR_CONNECTION_ERROR : PKSM_BRIDGE_ERROR_NONE;
 }

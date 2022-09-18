@@ -86,7 +86,7 @@ enum pksmBridgeError sendFileSegment(int fdconn, uint8_t* buffer, size_t positio
  * 
  * @param fdconn Connection file descriptor.
  */
-enum pksmBridgeError fileSendFinalization(int fdconn);
+enum pksmBridgeError sendClosure(int fdconn);
 
 /**
  * @brief Registers a non-blocking socket to listen for a connection to a port.
@@ -138,17 +138,14 @@ enum pksmBridgeError receiveFileMetadata(int fdconn, uint32_t* checksumSizeOut, 
 enum pksmBridgeError receiveFileSegment(int fdconn, uint8_t* buffer, size_t position, size_t size);
 
 /**
- * @brief Performs connection finalization and closure, retrieves return address, and checks integrity of received file.
+ * @brief Performs connection closure and retrieves return address
  * 
  * @param fdconn Connection file descriptor. Gets closed by this function.
  * @param servaddr Connection address information.
  * @param outAddress Pointer to store the return IP address to.
- * @param fileStruct Struct for the checksum validation function to use. No elements are freed on failure.
- * @param validateChecksumFunc Checksum function used to check save file integrity. 
- * @return enum pksmBridgeError PKSM_BRIDGE_DATA_FILE_CORRUPTED if the checksum fails. PKSM_BRIDGE_ERROR_NONE otherwise.
  */
-enum pksmBridgeError fileReceiptFinalization(int fdconn, struct sockaddr_in servaddr,
-    struct in_addr* outAddress, struct pksmBridgeFile fileStruct, bool (*validateChecksumFunc)(struct pksmBridgeFile));
+enum pksmBridgeError receiveClosure(int fdconn, struct sockaddr_in servaddr,
+    struct in_addr* outAddress);
 
 #ifdef __cplusplus
 }
