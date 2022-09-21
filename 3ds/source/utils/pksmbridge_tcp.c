@@ -108,7 +108,7 @@ static enum pksmBridgeError actionReady(int fdconn, int timeout, bool* readyOut,
         .events = action,
         .revents = 0
     };
-    if (poll(&fdEvents, 1 /* number of fds to track */, timeout) < 0) {
+    if (poll(&fdEvents, 1 /* number of fds to track */, timeout) < 0 || (fdEvents.revents & (POLLERR | POLLHUP | POLLNVAL))) {
         close(fdconn);
         return PKSM_BRIDGE_ERROR_CONNECTION_ERROR;
     }
@@ -143,7 +143,7 @@ enum pksmBridgeError initializeSendConnection(uint16_t port,
     // Expect a pksmBridgeRequest, which specifies the protocol version.
     struct pksmBridgeRequest request;
     int bytesRead = receiveDataFromSocketIntoBuffer(fd, &request, sizeof(request));
-    if (bytesRead != sizeof(request))
+    if ((size_t)bytesRead != sizeof(request))
     {
         close(fd);
         return PKSM_BRIDGE_DATA_READ_FAILURE;
@@ -158,7 +158,7 @@ enum pksmBridgeError initializeSendConnection(uint16_t port,
     struct pksmBridgeResponse response =
         createPKSMBridgeResponseForRequest(request, &checkSupportedPKSMBridgeProtocolVersionForTCP);
     int sentBytes = sendDataFromBufferToSocket(fd, &response, sizeof(response));
-    if (sentBytes != sizeof(response))
+    if ((size_t)sentBytes != sizeof(response))
     {
         close(fd);
         return PKSM_BRIDGE_DATA_WRITE_FAILURE;
@@ -204,7 +204,7 @@ enum pksmBridgeError sendPKSMBridgeFileMetadataToSocket(int fdconn, struct pksmB
 
 enum pksmBridgeError sendFileSegment(int fdconn, uint8_t* buffer, size_t position, size_t size)
 {
-    if (sendDataFromBufferToSocket(fdconn, buffer + position, size) != size) {
+    if ((size_t)sendDataFromBufferToSocket(fdconn, buffer + position, size) != size) {
         close(fdconn);
         return PKSM_BRIDGE_DATA_WRITE_FAILURE;
     }
@@ -253,20 +253,22 @@ enum pksmBridgeError checkForFileReceiveConnection(int fd, struct sockaddr_in* s
     int addrlen = sizeof(*servaddr);
     int fdconn = accept(fd, (struct sockaddr*)servaddr, (socklen_t*)&addrlen);
 
-    if (errno == EAGAIN || errno == EWOULDBLOCK)
-    {
-        *fdconnOut = fdconn;
-        return PKSM_BRIDGE_ERROR_NONE;
-    }
     if (fdconn < 0)
     {
-        close(fd);
-        return PKSM_BRIDGE_ERROR_CONNECTION_ERROR;
+        if (errno == EAGAIN || errno == EWOULDBLOCK)
+        {
+            *fdconnOut = fdconn;
+            return PKSM_BRIDGE_ERROR_NONE;
+        }
+        else {
+            close(fd);
+            return PKSM_BRIDGE_ERROR_CONNECTION_ERROR;
+        }
     }
 
     close(fd);
     // makes sure the socket is blocking. we actually want to have it be blocking for simplicity
-    if (fcntl(fdconn, F_SETFL, fcntl(fd, F_GETFL, 0) & ~O_NONBLOCK) < 0) {
+    if (fcntl(fdconn, F_SETFL, fcntl(fdconn, F_GETFL, 0) & (~O_NONBLOCK)) < 0) {
         close(fdconn);
         return PKSM_BRIDGE_ERROR_CONNECTION_ERROR;
     }
@@ -308,7 +310,7 @@ enum pksmBridgeError readReady(int fdconn, int timeout, bool* readyOut)
     return actionReady(fdconn, timeout, readyOut, POLLIN);
 }
 
-enum pksmBridgeError receiveFileMetadata(int fdconn, uint32_t* checksumSizeOut, uint8_t** checksumOut, uint32_t* fileSizeOut)
+enum pksmBridgeError receiveFileMetadata(int fdconn, struct pksmBridgeFile* file)
 {
     uint32_t checksumSize;
     uint32_t bytesRead =
@@ -335,15 +337,15 @@ enum pksmBridgeError receiveFileMetadata(int fdconn, uint32_t* checksumSizeOut, 
         return PKSM_BRIDGE_DATA_READ_FAILURE;
     }
 
-    *checksumSizeOut = checksumSize;
-    *checksumOut = checksumBuffer;
-    *fileSizeOut = fileSize;
+    file->checksumSize = checksumSize;
+    file->checksum = checksumBuffer;
+    file->size = fileSize;
     return PKSM_BRIDGE_ERROR_NONE;
 }
 
 enum pksmBridgeError receiveFileSegment(int fdconn, uint8_t* buffer, size_t position, size_t size)
 {
-    if (receiveDataFromSocketIntoBuffer(fdconn, buffer + position, size) != size) {
+    if ((size_t)receiveDataFromSocketIntoBuffer(fdconn, buffer + position, size) != size) {
         close(fdconn);
         return PKSM_BRIDGE_DATA_READ_FAILURE;
     }

@@ -120,11 +120,9 @@ enum pksmBridgeError readReady(int fdconn, int timeout, bool* readyOut);
  * @brief Receives save file length, hash, and hash length.
  * 
  * @param fdconn Connection file descriptor.
- * @param checksumSizeOut Pointer to store the size of the file checksum to.
- * @param checksumOut Pointer to store the file checksum to.
- * @param fileSizeOut Pointer to store the file size to.
+ * @param file A pointer to a pre-existing struct to write the metadata into.
  */
-enum pksmBridgeError receiveFileMetadata(int fdconn, uint32_t* checksumSizeOut, uint8_t** checksumOut, uint32_t* fileSizeOut);
+enum pksmBridgeError receiveFileMetadata(int fdconn, struct pksmBridgeFile* file);
 
 /**
  * @brief Receives save file segment. Blocks until complete.
