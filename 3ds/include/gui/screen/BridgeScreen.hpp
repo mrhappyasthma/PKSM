@@ -51,8 +51,10 @@ public:
         else {
             bridgeFile.size = TitleLoader::save->getLength();
             bridgeFile.contents = TitleLoader::save->rawData().get();
-            bridgeFile.checksumSize = 32;
-            bridgeFile.checksum = pksm::crypto::sha256(bridgeFile.contents, bridgeFile.size).data();
+            std::array<u8, 32> checksum = pksm::crypto::sha256(bridgeFile.contents, bridgeFile.size);
+            bridgeFile.checksumSize = checksum.size();
+            bridgeFile.checksum = new u8[bridgeFile.checksumSize];
+            memcpy(bridgeFile.checksum, checksum.data(), bridgeFile.checksumSize);
 
             connected = true;
             abortIfFailed(initializeSendConnection(PKSM_PORT, *returnAddress, &connfd));

@@ -119,7 +119,7 @@ void BridgeScreen::update(touchPosition* touch)
             }
             else {
                 if (current != bridgeFile.size) {
-                    size_t sizeToReceive = std::min<size_t>(0x3000, bridgeFile.size - current);
+                    size_t sizeToReceive = std::min<size_t>(0x2400, bridgeFile.size - current);
                     if (abortIfFailed(receiveFileSegment(connfd, bridgeFile.contents, current, sizeToReceive))) {
                         return;
                     }
@@ -149,7 +149,7 @@ void BridgeScreen::update(touchPosition* touch)
         }
         else {
             if (current != bridgeFile.size) {
-                size_t sizeToSend = std::min<size_t>(0x3000, bridgeFile.size - current);
+                size_t sizeToSend = std::min<size_t>(0x2400, bridgeFile.size - current);
                 if (abortIfFailed(sendFileSegment(connfd, bridgeFile.contents, current, sizeToSend))) {
                     return;
                 }
@@ -157,6 +157,7 @@ void BridgeScreen::update(touchPosition* touch)
             }
             else {
                 sendClosure(connfd);
+                delete[] bridgeFile.checksum;
                 done = true;
             }
         }
