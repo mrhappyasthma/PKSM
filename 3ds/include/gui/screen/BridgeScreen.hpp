@@ -84,6 +84,9 @@ private:
         else {
             close(sockfd);
         }
+        if (!receive) {
+            delete[] bridgeFile.checksum;
+        }
         finalValue = false;
         done = true;
     }
