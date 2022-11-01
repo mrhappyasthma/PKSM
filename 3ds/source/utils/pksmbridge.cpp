@@ -24,44 +24,18 @@
  *         reasonable ways as different from the original version.
  */
 
+#include "BridgeScreen.hpp"
 #include "Configuration.hpp"
 #include "DateTime.hpp"
 #include "MainMenu.hpp"
-#include "Sav.hpp"
-#include "TitleLoadScreen.hpp"
 #include "format.h"
 #include "gui.hpp"
-#include "i18n_ext.hpp"
 #include "loader.hpp"
 #include "pksmbridge_api.h"
-#include "pksmbridge_tcp.h"
-#include "utils/crypto.hpp"
 #include <arpa/inet.h>
 
-namespace
-{
-    bool saveFromBridge = false;
-    struct in_addr lastIPAddr;
-
-    char* getHostId()
-    {
-        static sockaddr_in addr;
-        addr.sin_addr.s_addr = gethostid();
-        return inet_ntoa(addr.sin_addr);
-    }
-
-    bool verifyPKSMBridgeFileSHA256Checksum(struct pksmBridgeFile file)
-    {
-        uint32_t expectedSHA256ChecksumSize = 32;
-        if (file.checksumSize != expectedSHA256ChecksumSize)
-        {
-            return false;
-        }
-        std::array<u8, 32> checksum = pksm::crypto::sha256(file.contents, file.size);
-        int result                  = memcmp(checksum.data(), file.checksum, file.checksumSize);
-        return (result == 0) ? true : false;
-    }
-}
+bool saveFromBridge = false;
+struct in_addr lastIPAddr = {0};
 
 bool isLoadedSaveFromBridge(void)
 {
@@ -69,95 +43,24 @@ bool isLoadedSaveFromBridge(void)
 }
 void setLoadedSaveFromBridge(bool v)
 {
-    saveFromBridge = false;
+    saveFromBridge = v;
 }
 
 bool receiveSaveFromBridge(void)
 {
-    if (!Gui::showChoiceMessage(i18n::localize("WIRELESS_WARNING") + '\n' +
-                                fmt::format(i18n::localize("WIRELESS_IP"), getHostId())))
-    {
-        return false;
-    };
-    uint8_t* file = nullptr;
-    uint32_t fileSize;
-    enum pksmBridgeError error = receiveFileOverPKSMBridgeViaTCP(
-        PKSM_PORT, &lastIPAddr, &file, &fileSize, &verifyPKSMBridgeFileSHA256Checksum);
-
-    switch (error)
-    {
-        case PKSM_BRIDGE_ERROR_NONE:
-            break;
-        case PKSM_BRIDGE_ERROR_UNSUPPORTED_PROTCOL_VERSION:
-            Gui::error(i18n::localize("BRIDGE_ERROR_UNSUPPORTED_PROTOCOL_VERISON"), errno);
-            return false;
-        case PKSM_BRIDGE_ERROR_CONNECTION_ERROR:
-            Gui::error(i18n::localize("SOCKET_CONNECTION_FAIL"), errno);
-            return false;
-        case PKSM_BRIDGE_DATA_READ_FAILURE:
-            Gui::error(i18n::localize("DATA_RECEIVE_FAIL"), errno);
-            return false;
-        case PKSM_BRIDGE_DATA_WRITE_FAILURE:
-            Gui::error(i18n::localize("DATA_SEND_FAIL"), errno);
-            return false;
-        case PKSM_BRIDGE_DATA_FILE_CORRUPTED:
-            Gui::error(i18n::localize("BRIDGE_ERROR_FILE_DATA_CORRUPTED"), errno);
-            return false;
-        case PKSM_BRIDGE_ERROR_UNEXPECTED_MESSAGE:
-            Gui::error(i18n::localize("BRIDGE_ERROR_UNEXPECTED_MESSAGE"), errno);
-            return false;
-        default:
-            Gui::error(i18n::localize("BRIDGE_ERROR_UNHANDLED"), errno);
-            return false;
+    BridgeScreen screen(true, &lastIPAddr);
+    if (Gui::runScreen(screen)) {
+        saveFromBridge = true;
+        Gui::setScreen(std::make_unique<MainMenu>());
+        return true;
     }
-
-    std::shared_ptr<u8[]> data = std::shared_ptr<u8[]>(file, free);
-    if (!TitleLoader::load(data, fileSize))
-    {
-        Gui::error(i18n::localize("BRIDGE_ERROR_FILE_DATA_CORRUPTED"), 2);
-        return false;
-    }
-
-    saveFromBridge = true;
-    Gui::setScreen(std::make_unique<MainMenu>());
-    return true;
+    return false;
 }
 
 bool sendSaveToBridge(void)
 {
-    struct pksmBridgeFile file;
-    file.size                   = TitleLoader::save->getLength();
-    file.contents               = TitleLoader::save->rawData().get();
-    std::array<u8, 32> checksum = pksm::crypto::sha256(file.contents, file.size);
-    file.checksum               = checksum.data();
-    file.checksumSize           = checksum.size();
-    enum pksmBridgeError error  = sendFileOverPKSMBridgeViaTCP(PKSM_PORT, lastIPAddr, file);
-    switch (error)
-    {
-        case PKSM_BRIDGE_ERROR_NONE:
-            return true;
-        case PKSM_BRIDGE_ERROR_UNSUPPORTED_PROTCOL_VERSION:
-            Gui::error(i18n::localize("BRIDGE_ERROR_UNSUPPORTED_PROTOCOL_VERISON"), errno);
-            return false;
-        case PKSM_BRIDGE_ERROR_CONNECTION_ERROR:
-            Gui::error(i18n::localize("SOCKET_CONNECTION_FAIL"), errno);
-            return false;
-        case PKSM_BRIDGE_DATA_READ_FAILURE:
-            Gui::error(i18n::localize("DATA_RECEIVE_FAIL"), errno);
-            return false;
-        case PKSM_BRIDGE_DATA_WRITE_FAILURE:
-            Gui::error(i18n::localize("DATA_SEND_FAIL"), errno);
-            return false;
-        case PKSM_BRIDGE_DATA_FILE_CORRUPTED:
-            Gui::error(i18n::localize("BRIDGE_ERROR_FILE_DATA_CORRUPTED"), errno);
-            return false;
-        case PKSM_BRIDGE_ERROR_UNEXPECTED_MESSAGE:
-            Gui::error(i18n::localize("BRIDGE_ERROR_UNEXPECTED_MESSAGE"), errno);
-            return false;
-        default:
-            Gui::error(i18n::localize("BRIDGE_ERROR_UNHANDLED"), errno);
-            return false;
-    }
+    BridgeScreen screen(false, &lastIPAddr);
+    return Gui::runScreen(screen);
 }
 
 void backupBridgeChanges()
